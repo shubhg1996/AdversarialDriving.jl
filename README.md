@@ -28,4 +28,5 @@ The `AdversarialDrivingMDP` is very versatile in its construction and supports t
 * `scale_reward` -  Whether or not to scale the reward so it is in the range [-1,1]. Default: `true`.
 * `end_of_road` - Define an early end of the road. Default: `Inf`.
 
-Maintained by Anthony Corso (acorso@stanford.edu)
+Forked from the original package by Anthony Corso (acorso@stanford.edu)
+Maintained by Shubh Gupta (shubhgup@stanford.edu)
