@@ -29,4 +29,5 @@ The `AdversarialDrivingMDP` is very versatile in its construction and supports t
 * `end_of_road` - Define an early end of the road. Default: `Inf`.
 
 Forked from the original package by Anthony Corso (acorso@stanford.edu)
+
 Maintained by Shubh Gupta (shubhgup@stanford.edu)
