@@ -4,6 +4,7 @@
 @with_kw struct Noise
     pos::VecE2 = VecE2(0,0)
     vel::Float64 = 0
+    gps_range::Array{Float64} = Float64[0.0, 0.0, 0.0, 0.0]
 end
 
 abstract type NoisyState end
@@ -96,11 +97,13 @@ function AutomotiveVisualization.add_renderable!(rendermodel::RenderModel, veh::
     return rendermodel
 end
 
-# Instructions for rendering the noisy pedestrian
+# Instructions for rendering the pedestrian
 function AutomotiveVisualization.add_renderable!(rendermodel::RenderModel, ped::Entity{NoisyPedState, VehicleDef, Int64})
     reg_ped = Entity(ped.state.veh_state, ped.def, ped.id)
     add_renderable!(rendermodel, FancyPedestrian(ped=reg_ped))
-    #TODO: Add noisy ghost
+    noisy_ped = Entity(noisy_entity(ped, ped_roadway).state.veh_state, ped.def, ped.id)
+    ghost_color = weighted_color_mean(0.3, colorant"blue", colorant"white")
+    add_renderable!(rendermodel, FancyPedestrian(ped=noisy_ped, color=ghost_color))
     return rendermodel
 end
 
@@ -130,7 +133,8 @@ function AutomotiveSimulator.propagate(ped::Entity{NoisyPedState, D, I}, action:
     vs_entity = Entity(ped.state.veh_state, ped.def, ped.id)
     a_lat_lon = reverse(action.a + action.da)
     vs = propagate(vs_entity, LatLonAccel(a_lat_lon...), roadway, Δt)
-    nps = NoisyPedState(set_lane(vs, laneid(ped), roadway), action.noise)
+    upd_noise = Noise(pos = (ped.state.noise.pos[1] + action.noise.pos[1] + action.noise.vel*Δt, action.noise.pos[2]), vel = action.noise.vel)
+    nps = NoisyPedState(AdversarialDriving.set_lane(vs, laneid(ped), roadway), upd_noise)
     @assert starting_lane == laneid(nps)
     nps
 end
@@ -222,12 +226,63 @@ function AutomotiveVisualization.add_renderable!(rendermodel::RenderModel, rb::R
     return rendermodel
 end
 
+## Definitions of sensor models and state estimation functions
+
+abstract type Landmark end
+
+# Struct that contains satellite positions (in NED w/ height relative to ground) and clock offsets
+@with_kw struct Satellite <: Landmark
+    pos::VecE3 = VecE3(0,0,0)
+    clk_bias::Float64 = 0
+    visible::Bool = true
+end
+
+abstract type SensorObservation end
+
+# Struct for defining range measurements and noise from GPS satellites 
+@with_kw struct GPSRangeMeasurement <: SensorObservation
+    range::Float64 = 0.0
+    noise::Float64 = 0.0
+end
+
+# Function to compute GPS measurements for an entity from satellite positions and noise
+function measure_gps(ent::Entity, noise::Array{Float64})
+    # TODO: move this somewhere outside
+    fixed_sat = [
+        Satellite(pos=VecE3(-1000,-1000,1000), clk_bias=0),
+        Satellite(pos=VecE3(1000,-1000,1000), clk_bias=0),
+        Satellite(pos=VecE3(-1000,1000,1000), clk_bias=0),
+        Satellite(pos=VecE3(1000,1000,1000), clk_bias=0)
+    ]
+    
+    ent_pos = posg(ent)
+    ranges = Union{Missing, GPSRangeMeasurement}[]
+    for i in 1:length(fixed_sat)
+        satpos = fixed_sat[i].pos
+        if fixed_sat[i].visible==true
+            range = hypot(ent_pos.x - satpos.x, ent_pos.y - satpos.y, satpos.z)
+            push!(ranges, GPSRangeMeasurement(range=range, noise=noise[i]))
+        else
+            push!(ranges, missing)
+        end
+    end
+    ranges
+end
+
+# Function to localize an entity using measurements
+function localize(ent::Entity, meas::Array{Array{Union{Missing, GPSRangeMeasurement}}}, roadway::Roadway)
+    # TODO: Replace with a higher-fidelity localization routine
+    last_meas = last(meas)
+    println(last_meas)
+end
+
 ## Definition of the T-Intersection DriverModel with observe! and rand()
 
-# Define a driving model for a T-intersection IDM model
+# Define a driving model (with sensor measurements) for a T-intersection IDM model
 @with_kw mutable struct TIDM <: DriverModel{BlinkerVehicleControl}
     idm::IntelligentDriverModel = IntelligentDriverModel() # underlying idm
     noisy_observations::Bool = false # Whether or not this model gets noisy observations
+    observation_history::Dict{Int64, Array{Array{Union{Missing, SensorObservation}}}} = Dict() # all sensor observations recorded in simulation
     ttc_threshold = 7 # threshold through intersection
     next_action::BlinkerVehicleControl = BlinkerVehicleControl() # The next action that the model will do (for controllable vehicles)
 
@@ -249,9 +304,10 @@ function Base.rand(rng::AbstractRNG, model::TIDM)
 
 # Observe function for TIDM
 function AutomotiveSimulator.observe!(model::TIDM, input_scene::Scene, roadway::Roadway, egoid::Int64)
+    
     # If this model is susceptible to noisy observations, adjust all the agents by noise
     scene = model.noisy_observations ? noisy_scene(input_scene, roadway) : input_scene
-
+    
     # Get the ego and the ego lane
     ego = get_by_id(scene, egoid)
     ego_v = vel(ego)

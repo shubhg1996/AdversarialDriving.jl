@@ -63,7 +63,11 @@ function AdversarialDrivingMDP(sut::Agent, adversaries::Vector{Agent}, road::Roa
                                no_collision_penalty = 1e3,
                                scale_reward = true,
                                end_of_road = Inf,)
+    
     agents = [adversaries..., sut, other_agents...]
+    
+    sut.model.observation_history = Dict(id(agents[i]) => Array{Union{Missing, SensorObservation}}[] for i=1:length(agents))
+    
     d = Dict(id(agents[i]) => i for i=1:length(agents))
     Na = length(adversaries)
     o = Float64[] # Last observation
@@ -160,9 +164,9 @@ function update_adversary!(adversary::Agent, action::Disturbance, s::Scene)
     index = findfirst(id(adversary), s)
     isnothing(index) && return nothing # If the adversary is not in the scene then don't update
     adversary.model.next_action = action # Set the adversaries next action
-    veh = s[index] # Get the actual entity
-    state_type = typeof(veh.state) # Find out the type of its state
-    s[index] =  Entity(state_type(veh.state, noise = action.noise), veh.def, veh.id) # replace the entity in the scene
+    # veh = s[index] # Get the actual entity
+    # state_type = typeof(veh.state) # Find out the type of its state
+    # s[index] =  Entity(state_type(veh.state, noise = action.noise), veh.def, veh.id) # replace the entity in the scene
 end
 
 
@@ -214,6 +218,8 @@ function step_scene(mdp::DrivingMDP, s::Scene, action::BlinkerVehicleControl, rn
         update_adversary!(adversary, adv_action, s)
     end
 
+    sut_model = model(mdp, sid)
+    
     # Loop through the vehicles in the scene, apply action and add to next scene
     for (i, veh) in enumerate(s)
         if veh.id == sid # for the sut, use the prescribed action
@@ -223,7 +229,11 @@ function step_scene(mdp::DrivingMDP, s::Scene, action::BlinkerVehicleControl, rn
             observe!(m, s, mdp.roadway, veh.id)
             a = rand(rng, m)
         end
+        
         bv = Entity(propagate(veh, a, mdp.roadway, mdp.dt), veh.def, veh.id)
+        # Get sensor observations
+        push!(sut_model.observation_history[id(veh)], measure_gps(bv, a.noise.gps_range))
+        
         !end_of_road(bv, mdp.roadway, mdp.end_of_road) && push!(entities, bv)
     end
     isempty(entities) ? Scene(typeof(sut(mdp).get_initial_entity())) : Scene([entities...])
